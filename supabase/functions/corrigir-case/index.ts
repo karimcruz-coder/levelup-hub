@@ -100,23 +100,26 @@ async function grade(admin: any, sub: any) {
 
     const key = (Deno.env.get("GEMINI_API_KEY") ?? Deno.env.get("GEMINI"));
     if (!key) throw new Error("GEMINI_API_KEY não configurada");
-    const res = await fetch(
+    const body = JSON.stringify({
+      contents: [{ role: "user", parts: [
+        { inline_data: { mime_type: "application/pdf", data: encodeBase64(pdf) } },
+        { text: prompt(plan?.plano ?? {}, prev ?? []) },
+      ] }],
+      generationConfig: { responseMimeType: "application/json", temperature: 0.3, maxOutputTokens: 6000 },
+    });
+    const call = () => fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key.trim() },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [
-            { inline_data: { mime_type: "application/pdf", data: encodeBase64(pdf) } },
-            { text: prompt(plan?.plano ?? {}, prev ?? []) },
-          ] }],
-          generationConfig: {
-            responseMimeType: "application/json", temperature: 0.3, maxOutputTokens: 6000,
-          },
-        }),
-      },
+      { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key.trim() }, body },
     );
-    if (res.status === 429) throw new Error("LIMITE_IA");
+    let res = await call();
+    // Google sobrecarregado (503/500): espera e tenta de novo, até 3 vezes
+    for (const wait of [3000, 8000, 15000]) {
+      if (res.status !== 503 && res.status !== 500) break;
+      console.error(`Gemini ${res.status}, tentando de novo em ${wait / 1000}s`);
+      await new Promise((ok) => setTimeout(ok, wait));
+      res = await call();
+    }
+    if (res.status === 429 || res.status === 503) throw new Error("LIMITE_IA");
     if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const out = (await res.json())?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
     const fb = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1));

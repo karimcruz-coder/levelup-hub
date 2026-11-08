@@ -109,6 +109,15 @@ async function gemini(text: string, maxTokens: number, signal: AbortSignal) {
     },
   );
   let res = await call(true);
+  // Google sobrecarregado (503/500): espera e tenta de novo, até 3 vezes
+  for (const wait of [3000, 8000, 15000]) {
+    if (res.status !== 503 && res.status !== 500) break;
+    console.error(`Gemini ${res.status}, tentando de novo em ${wait / 1000}s`);
+    await new Promise((ok) => setTimeout(ok, wait));
+    if (signal.aborted) throw new Error("DEMOROU");
+    res = await call(true);
+  }
+  if (res.status === 503) throw new Error("LIMITE_IA");
   if (res.status === 400) {
     const body = await res.text();
     console.error("Gemini 400 com thinkingLevel, tentando sem:", body.slice(0, 200));
@@ -221,7 +230,7 @@ Deno.serve(async (req) => {
     return json({ id: data.id });
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
-    if (msg === "LIMITE_IA") return json({ error: "A IA está no limite de uso agora. Tente de novo em 1 minuto." }, 429);
+    if (msg === "LIMITE_IA") return json({ error: "A IA do Google está sobrecarregada agora. Tente de novo em 1 ou 2 minutos." }, 429);
     if (msg === "DEMOROU") return json({ error: "A IA demorou demais para responder. Tente de novo; se repetir, escolha menos semanas." }, 504);
     console.error(msg);
     return json({ error: "Não deu para gerar a trilha agora. Tente de novo em instantes." }, 500);

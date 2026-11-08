@@ -224,28 +224,36 @@ function renderWizard() {
 
 async function generate() {
   const w = S.wiz;
-  const msgs = ["Lendo a vaga com atenção...", "Separando o que você já tem do que falta...", "Montando as semanas no seu ritmo...", "Procurando bons vídeos no YouTube...", "Criando um case com cara dessa empresa...", "Revisando tudo..."];
+  const msgs = ["Lendo a vaga com atenção...", "Separando o que você já tem do que falta...", "Criando um case com cara dessa empresa..."];
   app.innerHTML = `${topbar()}<main class="wrap"><div class="gen"><div class="gen-in fade">
     <div class="orb"><svg viewBox="170 170 1505 1720"><use href="#logo"/></svg></div>
     <h2>Montando sua trilha</h2><p class="gen-msg" id="gm">${msgs[0]}</p>
-    <p class="dim" style="font-size:13.5px">Leva por volta de 1 minuto. Não feche esta página.</p></div></div></main>`;
+    <p class="dim" style="font-size:13.5px">Leva de 2 a 4 minutos, em etapas. Não feche esta página.</p></div></div></main>`;
   bindTop();
-  let i = 0; const t = setInterval(() => { i = Math.min(i + 1, msgs.length - 1); const el = $("#gm"); if (el) el.textContent = msgs[i]; }, 9000);
+  let i = 0; const t = setInterval(() => { i = Math.min(i + 1, 2); const el = $("#gm"); if (el) el.textContent = msgs[i]; }, 9000);
+  let createdId = null;
   try {
     const res = await invokeFn("gerar-plano", {
       area: w.area, vaga_texto: w.vaga_texto, vaga_link: w.vaga_link,
       respostas: { nome: w.nome, origem: w.origem, nivel: w.nivel, horas: w.horas, semanas: w.semanas, formato: w.formato },
     });
     clearInterval(t);
+    createdId = res.id;
     try { localStorage.setItem("lu-plan", res.id); } catch (_) {}
     S.profile.nome = w.nome || S.profile.nome;
     S.wiz = { ...S.wiz, step: 0, vaga_texto: "", vaga_link: "" };
+    await fillWeeks(res.id, (m) => { const el = $("#gm"); if (el) el.textContent = m; });
     await loadPlans(res.id);
     S.tab = "trilha"; S.openWeeks = new Set();
     renderPlan();
     toast("Trilha pronta. Bons estudos!");
   } catch (e) {
     clearInterval(t);
+    if (createdId) {
+      // o diagnóstico e o case já foram salvos: mostra a trilha e deixa continuar depois
+      await loadPlans(createdId); S.tab = "trilha"; renderPlan(); toast(e.message);
+      return;
+    }
     app.innerHTML = `${topbar()}<main class="wrap"><div class="gen"><div class="gen-in fade">
       <h2>Não deu certo desta vez</h2><p class="muted">${esc(e.message)}</p>
       <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button class="btn btn-ghost" id="edit">${ic("back")} Revisar respostas</button><button class="btn btn-blue" id="retry">Tentar de novo</button></div>
@@ -254,6 +262,30 @@ async function generate() {
     $("#edit").onclick = () => renderWizard();
     $("#retry").onclick = () => generate();
   }
+}
+
+/* Preenche as semanas que ainda estão vazias, de 2 em 2, mostrando o progresso */
+async function fillWeeks(planId, onMsg) {
+  for (let guard = 0; guard < 8; guard++) {
+    const { data: plan } = await sb.from("plans").select("plano").eq("id", planId).single();
+    const sem = plan?.plano?.semanas ?? [];
+    const vazias = sem.map((s, i) => ((s.itens ?? []).length ? null : i + 1)).filter(Boolean);
+    if (!vazias.length) return;
+    const lote = vazias.slice(0, 2);
+    onMsg(`Escolhendo vídeos e leituras: semana${lote.length > 1 ? "s" : ""} ${lote.join(" e ")} de ${sem.length}...`);
+    await invokeFn("gerar-plano", { modo: "semanas", plan_id: planId, numeros: lote });
+  }
+}
+async function resumeWeeks() {
+  const planId = S.plan.id;
+  app.innerHTML = `${topbar()}<main class="wrap"><div class="gen"><div class="gen-in fade">
+    <div class="orb"><svg viewBox="170 170 1505 1720"><use href="#logo"/></svg></div>
+    <h2>Terminando sua trilha</h2><p class="gen-msg" id="gm">Continuando de onde parou...</p>
+    <p class="dim" style="font-size:13.5px">Cada etapa leva até 1 minuto. Não feche esta página.</p></div></div></main>`;
+  bindTop();
+  try { await fillWeeks(planId, (m) => { const el = $("#gm"); if (el) el.textContent = m; }); toast("Trilha completa!"); }
+  catch (e) { toast(e.message); }
+  await loadPlans(planId); renderPlan();
 }
 
 /* ---------------- plan helpers ---------------- */
@@ -293,7 +325,7 @@ function weeksHTML(plan, readonly) {
         <span class="mini" aria-hidden="true"><i style="width:${itens.length ? (done / itens.length) * 100 : 0}%"></i></span>
         <svg class="ic chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
       </button>
-      <div class="week-b">${itens.map((it, ii) => itemHTML(it, `s${si + 1}-${ii}`, plan.progresso?.[`s${si + 1}-${ii}`], readonly)).join("")}</div>
+      <div class="week-b">${itens.length ? itens.map((it, ii) => itemHTML(it, `s${si + 1}-${ii}`, plan.progresso?.[`s${si + 1}-${ii}`], readonly)).join("") : `<p class="dim" style="font-size:14px;padding:6px 2px">Os conteúdos desta semana ainda estão sendo escolhidos.</p>`}</div>
     </section>`;
   }).join("");
 }
@@ -476,6 +508,7 @@ function renderPlan() {
     <main class="wrap" style="padding-bottom:80px">${planBody(plan, S.subs, { readonly: false, rh: false })}</main>`;
   bindTop();
   $("#newp").addEventListener("click", () => { S.wiz.step = 0; renderWizard(); });
+  $("#resume")?.addEventListener("click", resumeWeeks);
   $("#psel")?.addEventListener("change", async (e) => {
     try { localStorage.setItem("lu-plan", e.target.value); } catch (_) {}
     S.plan = S.plans.find((p) => p.id === e.target.value); S.openWeeks = new Set(); S.tab = "trilha";

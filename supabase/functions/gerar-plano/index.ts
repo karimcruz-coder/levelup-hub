@@ -13,7 +13,7 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
-const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash";
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.8-flash";
 const AREAS = ["Dados e BI", "Marketing", "Produto"];
 
 function prompt(area: string, vaga: string, r: Record<string, unknown>) {
@@ -80,7 +80,6 @@ async function gemini(text: string) {
         contents: [{ role: "user", parts: [{ text }] }],
         generationConfig: {
           responseMimeType: "application/json", temperature: 0.6, maxOutputTokens: 16000,
-          thinkingConfig: { thinkingBudget: 2048 }, // limita o "pensar" para responder em ~1 min
         },
       }),
     },

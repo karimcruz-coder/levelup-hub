@@ -12,7 +12,7 @@ const CORS = {
 };
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
-const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash";
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.8-flash";
 
 function prompt(plano: any, anteriores: any[]) {
   const c = plano.case ?? {};
@@ -112,7 +112,6 @@ async function grade(admin: any, sub: any) {
           ] }],
           generationConfig: {
             responseMimeType: "application/json", temperature: 0.3, maxOutputTokens: 6000,
-            thinkingConfig: { thinkingBudget: 1024 },
           },
         }),
       },

@@ -438,6 +438,13 @@ function planBody(plan, subs, opts) {
         ${opts.rh ? `<p class="muted">${esc(v.resumo)}</p>` : `<p class="msg">${esc(plan.plano?.mensagem || v.resumo || "")}</p>`}</div>
       <div class="ringbig" aria-label="${pr.pct}% da trilha concluída"><svg viewBox="0 0 44 44"><circle class="bg" cx="22" cy="22" r="18" pathLength="100"/><circle class="fg" cx="22" cy="22" r="18" pathLength="100" style="stroke-dashoffset:${100 - pr.pct}"/></svg><b>${pr.pct}%</b><small>${pr.done}/${pr.total}</small></div>
     </div>
+    ${(() => {
+      const faltam = (plan.plano?.semanas ?? []).filter((s) => !(s.itens ?? []).length).length;
+      if (!faltam) return "";
+      return `<div class="card" style="display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:22px;border-color:rgba(124,157,255,.35)">
+        <span><b>Faltam ${faltam} semana${faltam > 1 ? "s" : ""} para a trilha ficar completa.</b> <span class="muted">O diagnóstico e o case já estão prontos.</span></span>
+        ${opts.rh ? "" : `<button class="btn btn-blue btn-sm" id="resume">Continuar montando ${ic("bolt")}</button>`}</div>`;
+    })()}
     <div class="tabs" role="tablist">${tabs.map(([k, t]) => `<button role="tab" data-tab="${k}" aria-selected="${S.tab === k}">${t}${k === "case" && subs.length ? `<span class="cnt">${subs.length}</span>` : ""}${k === "case" && opts.rh && pending ? `<span class="cnt">revisar</span>` : ""}</button>`).join("")}</div>
     <div id="pbody" class="fade">${content}</div>`;
 }

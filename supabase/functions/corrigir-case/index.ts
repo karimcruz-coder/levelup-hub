@@ -98,7 +98,7 @@ async function grade(admin: any, sub: any) {
     const pdf = new Uint8Array(await file.arrayBuffer());
     if (pdf.byteLength > 10 * 1024 * 1024) throw new Error("PDF maior que 10 MB");
 
-    const key = Deno.env.get("GEMINI_API_KEY");
+    const key = (Deno.env.get("GEMINI_API_KEY") ?? Deno.env.get("GEMINI"));
     if (!key) throw new Error("GEMINI_API_KEY não configurada");
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,

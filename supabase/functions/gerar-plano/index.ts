@@ -69,7 +69,7 @@ Responda SOMENTE com um JSON neste formato exato:
 }
 
 async function gemini(text: string) {
-  const key = Deno.env.get("GEMINI_API_KEY");
+  const key = (Deno.env.get("GEMINI_API_KEY") ?? Deno.env.get("GEMINI"));
   if (!key) throw new Error("GEMINI_API_KEY não configurada");
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
@@ -101,7 +101,7 @@ function isoToMin(iso: string) {
 
 // Busca o melhor vídeo para cada item de vídeo (em paralelo). Sem chave, não faz nada.
 async function attachVideos(plano: any) {
-  const key = Deno.env.get("YOUTUBE_API_KEY");
+  const key = (Deno.env.get("YOUTUBE_API_KEY") ?? Deno.env.get("YOUTUBE"));
   if (!key) return;
   const items: any[] = [];
   for (const s of plano.semanas ?? []) for (const it of s.itens ?? []) if (it.tipo === "video" && it.busca) items.push(it);

@@ -16,11 +16,13 @@ const json = (body: unknown, status = 200) =>
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.8-flash";
 const AREAS = ["Dados e BI", "Marketing", "Produto"];
 
-function prompt(area: string, vaga: string, r: Record<string, unknown>) {
+function contexto(area: string, vaga: string, r: Record<string, unknown>) {
   const horas = Number(r.horas) || 4;
   const semanas = Math.min(Math.max(Number(r.semanas) || 6, 2), 12);
-  return `Você é um especialista em carreira e recrutamento no Brasil, montando um plano de estudo
-para uma pessoa conseguir UMA vaga específica. Escreva tudo em português do Brasil, direto e encorajador.
+  return {
+    horas, semanas,
+    texto: `Você é um especialista em carreira e recrutamento no Brasil, ajudando uma pessoa a conseguir UMA vaga
+específica. Escreva tudo em português do Brasil, direto e encorajador. Seja conciso.
 
 ÁREA: ${area}
 VAGA (texto colado pela pessoa, pode estar bagunçado):
@@ -34,62 +36,108 @@ SOBRE A PESSOA:
 - Nível atual na área: ${r.nivel ?? "não informado"}
 - Tempo por semana: ${horas} horas
 - Prazo: ${semanas} semanas
-- Prefere: ${r.formato ?? "misto"} (videos = maioria vídeos; leitura = maioria artigos e livros; misto = equilibrado)
+- Prefere: ${r.formato ?? "misto"} (videos = maioria vídeos; leitura = maioria artigos e livros; misto = equilibrado)`,
+  };
+}
 
-REGRAS DA TRILHA:
-1. Exatamente ${semanas} semanas. Some os "minutos" dos itens de cada semana: NUNCA passe de ${horas * 60} minutos.
-2. Foque nas competências que FALTAM para esta vaga. Não ensine o que a pessoa já tem.
-3. Cada semana tem 3 a 6 itens e termina com 1 item do tipo "pratica" ligado ao case.
-4. NUNCA escreva URLs. Para cada item informe um campo "busca":
-   - tipo "video": termos de busca para o YouTube em português (ex.: "SQL joins para iniciantes"),
-     específicos o bastante para achar uma aula boa e curta.
-   - tipo "artigo": termos de busca para o Google (pode citar fontes conhecidas, ex.: "Alura blog o que é ETL").
-   - tipo "livro": só livros REAIS e conhecidos, com autor. Se não tiver certeza que existe, não use livro.
-   - tipo "pratica": um exercício curto que a pessoa faz sozinha (em "busca" coloque "").
-5. "minutos" realista: vídeo 10-40, artigo 10-25, capítulo de livro 30-60, prática 30-90.
+// Parte A: leitura da vaga, diagnóstico e case
+function promptA(area: string, vaga: string, r: Record<string, unknown>) {
+  const c = contexto(area, vaga, r);
+  return `${c.texto}
+
+TAREFA: analise a vaga, faça o diagnóstico da pessoa e crie UM case prático.
 
 REGRAS DO CASE:
-- Um desafio prático com cara da empresa e da vaga, que a pessoa resolve em ${Math.max(3, Math.round(horas * 1.5))} horas no máximo
+- Desafio com cara da empresa e da vaga, que a pessoa resolve em ${Math.max(3, Math.round(c.horas * 1.5))} horas no máximo
   e entrega em UM PDF (relatório, apresentação ou dashboard exportado).
-- Se precisar de dados, invente uma tabela pequena e realista em "dados" (texto/Markdown, até 15 linhas)
-  ou descreva onde achar dados públicos gratuitos.
+- Se precisar de dados, invente uma tabela pequena e realista em "dados" (Markdown, até 12 linhas)
+  ou diga onde achar dados públicos gratuitos.
 - 4 a 5 critérios de avaliação com peso (somando 100), do jeito que um recrutador avaliaria.
+- Entre 6 e 10 competências no diagnóstico.
 
-Responda SOMENTE com um JSON neste formato exato:
+Responda SOMENTE com JSON neste formato:
 {
   "vaga": {"titulo": "", "empresa": "", "senioridade": "", "resumo": "2 frases sobre o que a vaga pede"},
   "mensagem": "1 frase motivadora e específica para a pessoa",
   "competencias": [{"nome": "", "tipo": "tecnica|comportamental", "status": "tem|parcial|falta", "porque": "1 frase"}],
-  "semanas": [{"numero": 1, "tema": "", "objetivo": "1 frase", "itens": [
-     {"tipo": "video|artigo|livro|pratica", "titulo": "", "busca": "", "autor": "", "minutos": 20, "porque": "1 frase ligando à vaga"}
-  ]}],
   "case": {"titulo": "", "contexto": "", "desafio": "", "dados": "", "entregaveis": [""],
            "criterios": [{"nome": "", "peso": 25, "descricao": ""}], "dicas": [""]}
 }`;
 }
 
-async function gemini(text: string) {
+// Parte B: a trilha semana a semana
+function promptB(area: string, vaga: string, r: Record<string, unknown>) {
+  const c = contexto(area, vaga, r);
+  return `${c.texto}
+
+TAREFA: monte a trilha de estudo semana a semana para essa vaga.
+
+REGRAS:
+1. Exatamente ${c.semanas} semanas. A soma dos "minutos" de cada semana NUNCA passa de ${c.horas * 60}.
+2. Foque no que a vaga pede e a pessoa provavelmente ainda não domina, considerando de onde ela vem e o nível dela.
+3. Cada semana tem 3 a 5 itens e termina com 1 item do tipo "pratica" (exercício curto que prepara para um case da vaga).
+4. NUNCA escreva URLs. Para cada item informe "busca":
+   - "video": termos de busca para o YouTube em português, específicos (ex.: "SQL joins para iniciantes").
+   - "artigo": termos de busca para o Google (pode citar fontes conhecidas).
+   - "livro": só livros REAIS e conhecidos, com autor. Na dúvida, não use livro.
+   - "pratica": deixe "busca" vazio.
+5. "minutos" realista: vídeo 10-40, artigo 10-25, capítulo de livro 30-60, prática 30-90.
+6. "porque": no máximo 1 frase curta.
+
+Responda SOMENTE com JSON neste formato:
+{"semanas": [{"numero": 1, "tema": "", "objetivo": "1 frase", "itens": [
+  {"tipo": "video|artigo|livro|pratica", "titulo": "", "busca": "", "autor": "", "minutos": 20, "porque": ""}
+]}]}`;
+}
+
+async function gemini(text: string, maxTokens: number, signal: AbortSignal) {
   const key = (Deno.env.get("GEMINI_API_KEY") ?? Deno.env.get("GEMINI"));
   if (!key) throw new Error("GEMINI_API_KEY não configurada");
-  const res = await fetch(
+  const call = (thinking: boolean) => fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
-      method: "POST",
+      method: "POST", signal,
       headers: { "Content-Type": "application/json", "x-goog-api-key": key.trim() },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text }] }],
         generationConfig: {
-          responseMimeType: "application/json", temperature: 0.6, maxOutputTokens: 16000,
+          responseMimeType: "application/json", temperature: 0.6, maxOutputTokens: maxTokens,
+          // pensa pouco para responder rápido (o limite do Supabase gratuito é ~150 s)
+          ...(thinking ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
         },
       }),
     },
   );
+  let res = await call(true);
+  if (res.status === 400) {
+    const body = await res.text();
+    console.error("Gemini 400 com thinkingLevel, tentando sem:", body.slice(0, 200));
+    res = await call(false);
+  }
   if (res.status === 429) throw new Error("LIMITE_IA");
   if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();
   const out = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
   const start = out.indexOf("{"), end = out.lastIndexOf("}");
   return JSON.parse(out.slice(start, end + 1));
+}
+
+// As duas partes rodam ao mesmo tempo; se passar de 125 s, desiste com mensagem clara
+async function gerarPlano(area: string, vaga: string, r: Record<string, unknown>) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 125_000);
+  try {
+    const [a, b] = await Promise.all([
+      gemini(promptA(area, vaga, r), 6000, ctl.signal),
+      gemini(promptB(area, vaga, r), 9000, ctl.signal),
+    ]);
+    return { ...a, semanas: b.semanas };
+  } catch (e) {
+    if (ctl.signal.aborted) throw new Error("DEMOROU");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function isoToMin(iso: string) {
@@ -159,7 +207,7 @@ Deno.serve(async (req) => {
     const { count } = await admin.from("plans").select("id", { count: "exact", head: true }).eq("user_id", user.id);
     if ((count ?? 0) >= 5) return json({ error: "Você já tem 5 trilhas. Fale com a equipe para liberar mais." }, 400);
 
-    const plano = await gemini(prompt(area, vaga, respostas));
+    const plano = await gerarPlano(area, vaga, respostas);
     if (!Array.isArray(plano?.semanas) || !plano?.case) throw new Error("Resposta da IA incompleta");
     await attachVideos(plano);
 
@@ -174,6 +222,7 @@ Deno.serve(async (req) => {
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     if (msg === "LIMITE_IA") return json({ error: "A IA está no limite de uso agora. Tente de novo em 1 minuto." }, 429);
+    if (msg === "DEMOROU") return json({ error: "A IA demorou demais para responder. Tente de novo; se repetir, escolha menos semanas." }, 504);
     console.error(msg);
     return json({ error: "Não deu para gerar a trilha agora. Tente de novo em instantes." }, 500);
   }

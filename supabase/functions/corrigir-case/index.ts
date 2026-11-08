@@ -101,10 +101,10 @@ async function grade(admin: any, sub: any) {
     const key = Deno.env.get("GEMINI_API_KEY");
     if (!key) throw new Error("GEMINI_API_KEY não configurada");
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key.trim() },
         body: JSON.stringify({
           contents: [{ role: "user", parts: [
             { inline_data: { mime_type: "application/pdf", data: encodeBase64(pdf) } },

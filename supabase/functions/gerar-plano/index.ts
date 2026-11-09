@@ -5,6 +5,7 @@
 // O app chama o passo 1 e depois o passo 2 quantas vezes precisar, mostrando o progresso.
 // Segredos: GEMINI_API_KEY (ou GEMINI) e YOUTUBE_API_KEY (ou YOUTUBE, opcional)
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { gemini as geminiJSON } from "../_shared/gemini.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -14,9 +15,7 @@ const CORS = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
-const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.8-flash";
 const AREAS = ["Dados e BI", "Marketing", "Produto"];
-const LIMITE_MS = 120_000; // desiste antes do limite de ~150 s do Supabase
 
 // deno-lint-ignore no-explicit-any
 type Any = any;
@@ -104,52 +103,8 @@ Responda SOMENTE com JSON neste formato:
 ]}]}`;
 }
 
-async function gemini(text: string, maxTokens: number) {
-  const key = (Deno.env.get("GEMINI_API_KEY") ?? Deno.env.get("GEMINI"));
-  if (!key) throw new Error("GEMINI_API_KEY não configurada");
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), LIMITE_MS);
-  const call = (thinking: boolean) => fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST", signal: ctl.signal,
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key.trim() },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text }] }],
-        generationConfig: {
-          responseMimeType: "application/json", temperature: 0.6, maxOutputTokens: maxTokens,
-          ...(thinking ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
-        },
-      }),
-    },
-  );
-  try {
-    const t0 = Date.now();
-    let res = await call(true);
-    // Google sobrecarregado (503/500): espera e tenta de novo, até 3 vezes
-    for (const wait of [3000, 8000, 15000]) {
-      if (res.status !== 503 && res.status !== 500) break;
-      console.error(`Gemini ${res.status}, tentando de novo em ${wait / 1000}s`);
-      await new Promise((ok) => setTimeout(ok, wait));
-      res = await call(true);
-    }
-    if (res.status === 400) {
-      console.error("Gemini 400 com thinkingLevel, tentando sem:", (await res.text()).slice(0, 200));
-      res = await call(false);
-    }
-    if (res.status === 429 || res.status === 503) throw new Error("LIMITE_IA");
-    if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const data = await res.json();
-    console.log(`Gemini respondeu em ${Math.round((Date.now() - t0) / 1000)}s`);
-    const out = data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
-    return JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1));
-  } catch (e) {
-    if (ctl.signal.aborted) throw new Error("DEMOROU");
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// Chama o Gemini (troca de modelo sozinho se um estiver lento ou sobrecarregado)
+const gemini = (text: string, maxTokens: number) => geminiJSON([{ text }], maxTokens, 0.6, 115_000);
 
 function isoToMin(iso: string) {
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);

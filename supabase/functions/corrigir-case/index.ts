@@ -4,6 +4,7 @@
 // Segredo necessário: GEMINI_API_KEY
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
+import { gemini } from "../_shared/gemini.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -12,7 +13,6 @@ const CORS = {
 };
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
-const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.8-flash";
 
 function prompt(plano: any, anteriores: any[]) {
   const c = plano.case ?? {};
@@ -98,39 +98,19 @@ async function grade(admin: any, sub: any) {
     const pdf = new Uint8Array(await file.arrayBuffer());
     if (pdf.byteLength > 10 * 1024 * 1024) throw new Error("PDF maior que 10 MB");
 
-    const key = (Deno.env.get("GEMINI_API_KEY") ?? Deno.env.get("GEMINI"));
-    if (!key) throw new Error("GEMINI_API_KEY não configurada");
-    const body = JSON.stringify({
-      contents: [{ role: "user", parts: [
-        { inline_data: { mime_type: "application/pdf", data: encodeBase64(pdf) } },
-        { text: prompt(plan?.plano ?? {}, prev ?? []) },
-      ] }],
-      generationConfig: { responseMimeType: "application/json", temperature: 0.3, maxOutputTokens: 6000 },
-    });
-    const call = () => fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key.trim() }, body },
-    );
-    let res = await call();
-    // Google sobrecarregado (503/500): espera e tenta de novo, até 3 vezes
-    for (const wait of [3000, 8000, 15000]) {
-      if (res.status !== 503 && res.status !== 500) break;
-      console.error(`Gemini ${res.status}, tentando de novo em ${wait / 1000}s`);
-      await new Promise((ok) => setTimeout(ok, wait));
-      res = await call();
-    }
-    if (res.status === 429 || res.status === 503) throw new Error("LIMITE_IA");
-    if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const out = (await res.json())?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
-    const fb = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1));
+    // troca de modelo sozinho se um estiver lento ou sobrecarregado
+    const fb = await gemini([
+      { inline_data: { mime_type: "application/pdf", data: encodeBase64(pdf) } },
+      { text: prompt(plan?.plano ?? {}, prev ?? []) },
+    ], 6000, 0.3, 125_000);
     const nota = Math.max(0, Math.min(10, Number(fb.nota_geral) || 0));
 
     await admin.from("submissions").update({ status: "corrigido", feedback: fb, nota, erro: null }).eq("id", subId);
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     console.error(msg);
-    const friendly = msg === "LIMITE_IA"
-      ? "A IA está no limite de uso agora. Envie o PDF de novo em 1 minuto."
+    const friendly = msg === "LIMITE_IA" || msg === "DEMOROU"
+      ? "A IA do Google está sobrecarregada agora. Envie o PDF de novo em alguns minutos."
       : "Não conseguimos ler esse PDF. Confira se ele abre normalmente, tem até 10 MB, e envie de novo.";
     await admin.from("submissions").update({ status: "erro", erro: friendly }).eq("id", subId);
   }

@@ -31,7 +31,8 @@ if (!/^https?:\/\//.test(SUPABASE_URL)) {
     (Supabase › Project Settings › API). O passo a passo completo está no arquivo <code>GUIA.md</code>.</p></div>`;
   throw new Error("config pendente");
 }
-const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// "implicit": o link do e-mail funciona mesmo se for aberto em outro aparelho ou navegador
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { flowType: "implicit", detectSessionInUrl: true, persistSession: true } });
 
 /* ---------------- state ---------------- */
 const S = {
@@ -154,9 +155,31 @@ function renderLogin() {
       <div class="field"><label for="em">E-mail</label><input type="email" id="em" autocomplete="email" placeholder="voce@email.com" required></div>
       <p class="err" id="lerr" aria-live="polite"></p>
       <button class="btn btn-primary" id="lbtn" type="submit">Receber link de acesso ${ic("arrow")}</button>
-      <div id="sent" hidden class="card" style="padding:18px"><b>Link enviado.</b><p class="muted" style="margin-top:6px">Abra seu e-mail e clique no link. Pode fechar esta aba. Não chegou? Veja o spam ou tente de novo em alguns minutos.</p></div>
+      <div id="sent" hidden class="card" style="padding:18px;display:grid;gap:12px">
+        <div><b>Enviamos um e-mail para você.</b><p class="muted" style="margin-top:6px">Clique no link do e-mail <b>ou</b> digite aqui o código que veio nele. O código funciona em qualquer aparelho.</p></div>
+        <div class="field" style="margin:0"><label for="otp">Código do e-mail</label><input type="text" id="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456"></div>
+        <button class="btn btn-blue" type="button" id="obtn">Entrar com o código</button>
+        <p class="dim" style="font-size:13px">Não chegou? Veja o spam e a aba Promoções. Use sempre o e-mail mais recente.</p>
+      </div>
     </form></div>
   </div>`;
+  // voltou do link do e-mail com erro (link expirado, já usado ou aberto duas vezes)
+  const hp = new URLSearchParams(location.hash.slice(1) || location.search.slice(1));
+  if (hp.get("error") || hp.get("error_code")) {
+    $("#lerr").textContent = hp.get("error_code") === "otp_expired"
+      ? "Esse link expirou ou já foi usado. Peça um novo e, se preferir, entre digitando o código do e-mail."
+      : "Não deu para entrar por esse link. Peça um novo e entre digitando o código do e-mail.";
+    history.replaceState(null, "", location.pathname);
+  }
+  $("#obtn").addEventListener("click", async () => {
+    const email = $("#em").value.trim().toLowerCase(), token = $("#otp").value.replace(/\D/g, ""), err = $("#lerr"), b = $("#obtn");
+    if (token.length < 6) { err.textContent = "Digite o código que veio no e-mail."; return $("#otp").focus(); }
+    b.disabled = true; b.innerHTML = `<span class="spinner"></span> Entrando...`;
+    let { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
+    if (error) ({ error } = await sb.auth.verifyOtp({ email, token, type: "signup" })); // primeiro acesso
+    b.disabled = false; b.textContent = "Entrar com o código";
+    if (error) err.textContent = "Código inválido ou expirado. Confira o e-mail mais recente ou peça um novo.";
+  });
   $("#login").addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = $("#em").value.trim().toLowerCase(), err = $("#lerr"), btn = $("#lbtn");
@@ -173,6 +196,7 @@ function renderLogin() {
       return;
     }
     $("#sent").hidden = false;
+    $("#otp").focus();
   });
 }
 

@@ -88,7 +88,7 @@ async function route() {
   if (profile.role === "rh") return loadRH();
   await loadPlans();
   if (!S.plans.length) { S.wiz.nome = S.wiz.nome || profile.nome || ""; return renderWizard(); }
-  renderPlan();
+  renderHome();
 }
 
 async function loadPlans(selectId) {
@@ -98,17 +98,26 @@ async function loadPlans(selectId) {
   try { saved = saved || localStorage.getItem("lu-plan"); } catch (_) {}
   S.plan = S.plans.find((p) => p.id === saved) || S.plans[0] || null;
   if (S.plan) await loadSubs(S.plan.id);
+  // resumo dos cases de todas as trilhas, para a tela inicial
+  const ids = S.plans.map((p) => p.id);
+  const { data: all } = ids.length
+    ? await sb.from("submissions").select("plan_id,status,nota,created_at").in("plan_id", ids).order("created_at", { ascending: false })
+    : { data: [] };
+  S.allSubs = all ?? [];
 }
 async function loadSubs(planId) {
   const { data } = await sb.from("submissions").select("*").eq("plan_id", planId).order("created_at", { ascending: false });
   S.subs = data ?? [];
 }
 
-function topbar(extra = "") {
+function topbar(extra = "", active = "") {
   const p = S.profile;
+  const nav = p?.role === "rh"
+    ? [["painel", "Painel do RH"], ["comunidade", "Comunidade"]]
+    : [["home", "Minhas trilhas"], ["comunidade", "Comunidade"]];
   return `<header class="top"><div class="wrap">
     <a class="logo" href="./" aria-label="LevelUp Hub"><svg viewBox="170 170 1505 1720" aria-hidden="true"><use href="#logo"/></svg><span>LevelUp<b>hub</b></span></a>
-    ${p?.role === "rh" ? `<span class="chip-role">Painel do RH</span>` : ""}
+    ${p ? `<nav class="topnav" aria-label="Seções">${nav.map(([k, t]) => `<button data-nav="${k}" ${active === k ? 'aria-current="page"' : ""}>${t}</button>`).join("")}</nav>` : ""}
     <span class="sp"></span>${extra}
     <span class="who">${esc(p?.nome || p?.email || "")}</span>
     <button class="btn btn-ghost btn-sm" id="logout" title="Sair">${ic("out")}<span class="sr">Sair</span></button>
@@ -116,6 +125,15 @@ function topbar(extra = "") {
 }
 function bindTop() {
   $("#logout")?.addEventListener("click", async () => { await sb.auth.signOut(); });
+  $$("[data-nav]").forEach((b) => b.addEventListener("click", () => goNav(b.dataset.nav)));
+}
+async function goNav(k) {
+  clearTimeout(pollT);
+  if (k === "comunidade") return renderComunidade();
+  if (k === "painel") { S.rhPlanId = null; return loadRH(); }
+  await loadPlans(S.plan?.id);
+  if (!S.plans.length) return renderWizard();
+  renderHome();
 }
 
 /* ---------------- login ---------------- */
@@ -161,7 +179,7 @@ function renderLogin() {
 /* ---------------- wizard ---------------- */
 function renderWizard() {
   const w = S.wiz;
-  const back = S.plans.length ? `<button class="btn btn-ghost btn-sm" id="cancel">${ic("back")} Voltar à minha trilha</button>` : "";
+  const back = S.plans.length ? `<button class="btn btn-ghost btn-sm" id="cancel">${ic("back")} Voltar</button>` : "";
   const bars = [0, 1, 2].map((i) => `<i class="${i <= w.step ? "on" : ""}"></i>`).join("");
   let body = "";
   if (w.step === 0) body = `
@@ -201,7 +219,7 @@ function renderWizard() {
       </div>
     </form></div></main>`;
   bindTop();
-  $("#cancel")?.addEventListener("click", () => renderPlan());
+  $("#cancel")?.addEventListener("click", () => renderHome());
   $("#vt")?.addEventListener("input", (e) => { $("#vcount").textContent = e.target.value.length; });
   const collect = () => {
     const f = $("#wf");
@@ -509,22 +527,227 @@ function renderPlan() {
   clearTimeout(pollT);
   const plan = S.plan;
   if (!plan) return renderWizard();
-  const sw = S.plans.length > 1
-    ? `<div class="plans-switch"><select id="psel" aria-label="Trocar de trilha">${S.plans.map((p) => `<option value="${p.id}" ${p.id === plan.id ? "selected" : ""}>${esc(p.plano?.vaga?.titulo || "Trilha")}</option>`).join("")}</select></div>` : "";
-  app.innerHTML = `${topbar(`${sw}<button class="btn btn-ghost btn-sm" id="newp">${ic("plus")} Nova vaga</button>`)}
-    <main class="wrap" style="padding-bottom:80px">${planBody(plan, S.subs, { readonly: false, rh: false })}</main>`;
+  app.innerHTML = `${topbar("", "home")}
+    <main class="wrap" style="padding-bottom:80px">
+      <div style="padding-top:24px"><button class="link" data-nav="home">${ic("back")} Minhas trilhas</button></div>
+      ${planBody(plan, S.subs, { readonly: false, rh: false })}</main>`;
   bindTop();
-  $("#newp").addEventListener("click", () => { S.wiz.step = 0; renderWizard(); });
   $("#resume")?.addEventListener("click", resumeWeeks);
-  $("#psel")?.addEventListener("change", async (e) => {
-    try { localStorage.setItem("lu-plan", e.target.value); } catch (_) {}
-    S.plan = S.plans.find((p) => p.id === e.target.value); S.openWeeks = new Set(); S.tab = "trilha";
-    await loadSubs(S.plan.id); renderPlan();
-  });
   bindPlanBody(plan, S.subs, { readonly: false, rh: false }, renderPlan);
   // enquanto houver correção em andamento, atualiza sozinho (até ~3 min)
   if (S.subs.some(isFresh)) schedulePoll();
 }
+/* ---------------- início: minhas trilhas ---------------- */
+function semanaAtual(plan) {
+  const sem = plan.plano?.semanas ?? [];
+  for (let i = 0; i < sem.length; i++) {
+    const itens = sem[i].itens ?? [];
+    const faltam = itens.filter((_, k) => !plan.progresso?.[`s${i + 1}-${k}`]).length;
+    if (!itens.length || faltam) return { n: i + 1, total: sem.length, tema: sem[i].tema, faltam, vazia: !itens.length };
+  }
+  return null;
+}
+function caseStatus(planId) {
+  const ss = (S.allSubs ?? []).filter((s) => s.plan_id === planId);
+  const ok = ss.find((s) => s.status === "corrigido");
+  if (ok) return `<span class="pill ${Number(ok.nota) >= 8 ? "ok" : "amb"}">Case: nota ${Number(ok.nota).toFixed(1).replace(".", ",")}</span>`;
+  if (ss.some(isPending)) return `<span class="pill wait">Case: corrigindo</span>`;
+  return `<span class="pill">Case: sem envio</span>`;
+}
+async function openPlan(id) {
+  S.plan = S.plans.find((p) => p.id === id); if (!S.plan) return;
+  try { localStorage.setItem("lu-plan", id); } catch (_) {}
+  S.tab = "trilha"; S.openWeeks = new Set();
+  await loadSubs(id); renderPlan(); window.scrollTo(0, 0);
+}
+async function renderHome() {
+  clearTimeout(pollT);
+  const nome = (S.profile?.nome || "").split(" ")[0];
+  const cards = S.plans.map((p) => {
+    const pr = progressOf(p), sa = semanaAtual(p), v = p.plano?.vaga ?? {};
+    const sub = !sa ? "Trilha concluída. Hora de caprichar no case!"
+      : sa.vazia ? "Conteúdos ainda sendo montados"
+      : `Semana ${sa.n} de ${sa.total} · falta${sa.faltam > 1 ? "m" : ""} ${sa.faltam} ${sa.faltam > 1 ? "itens" : "item"}`;
+    return `<button class="pcard" data-open="${p.id}">
+      <span class="label">${esc(p.area)}</span>
+      <span class="pc-t">${esc(v.titulo || "Trilha")}</span>
+      <span class="muted">${esc(v.empresa || "")}</span>
+      <span class="pc-bar"><i style="width:${pr.pct}%"></i></span>
+      <span class="pc-row"><b>${pr.pct}%</b><span class="muted">${esc(sub)}</span></span>
+      ${sa && !sa.vazia ? `<span class="dim" style="font-size:13.5px">Agora: ${esc(sa.tema)}</span>` : ""}
+      <span>${caseStatus(p.id)}</span>
+    </button>`;
+  }).join("");
+  app.innerHTML = `${topbar("", "home")}<main class="wrap" style="padding-bottom:80px">
+    <div class="rh-head fade"><div><span class="label">Minhas trilhas</span><h1>Oi${nome ? ", " + esc(nome) : ""}. Bora subir de nível?</h1>
+      <p class="muted" style="margin-top:8px">Cada trilha é uma vaga que você quer conquistar.</p></div>
+      <button class="btn btn-blue" id="newp">${ic("plus")} Nova vaga</button></div>
+    <div class="home-grid fade">
+      <section class="pcards">${cards}</section>
+      <aside class="card home-feed"><div class="sub-h"><span class="label">Na comunidade</span><button class="link" data-nav="comunidade">Abrir ${ic("arrow")}</button></div>
+        <div id="mini-feed" class="mini-feed"><span class="spinner"></span></div></aside>
+    </div></main>`;
+  bindTop();
+  $("#newp").addEventListener("click", () => { S.wiz.step = 0; S.wiz.nome = S.wiz.nome || S.profile?.nome || ""; renderWizard(); });
+  $$("[data-open]").forEach((b) => b.addEventListener("click", () => openPlan(b.dataset.open)));
+  // prévia da comunidade
+  const { posts, membros } = await fetchFeed("tudo", 5);
+  const box = $("#mini-feed"); if (!box) return;
+  box.innerHTML = posts.length ? posts.map((p) => {
+    const m = membros[p.user_id] || {};
+    return `<div class="mf-item"><span class="av">${esc(iniciais(m.nome))}</span><p><b>${esc(m.nome || "Participante")}</b> ${p.tipo === "conquista" ? esc(p.texto) : `<span class="muted">postou:</span> ${esc(p.texto.slice(0, 110))}${p.texto.length > 110 ? "…" : ""}`}<span class="dim"> · ${tempo(p.created_at)}</span></p></div>`;
+  }).join("") : `<p class="muted" style="font-size:14.5px">Ainda está quieto por aqui. Seja a primeira pessoa a postar!</p>`;
+}
+
+/* ---------------- comunidade ---------------- */
+const CANAIS = [["tudo", "Tudo"], ["geral", "Geral"], ["dados", "Dados e BI"], ["marketing", "Marketing"], ["produto", "Produto"]];
+const nomeCanal = (c) => (CANAIS.find((x) => x[0] === c) || [c, c])[1];
+const iniciais = (n) => String(n || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
+function tempo(d) {
+  const s = (Date.now() - new Date(d).getTime()) / 1000;
+  if (s < 60) return "agora";
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `há ${Math.floor(s / 3600)} h`;
+  if (s < 604800) return `há ${Math.floor(s / 86400)} d`;
+  return fmtDate(d);
+}
+async function fetchFeed(canal, limit = 60) {
+  let q = sb.from("posts").select("*").order("fixado", { ascending: false }).order("created_at", { ascending: false }).limit(limit);
+  if (canal !== "tudo") q = q.eq("canal", canal);
+  const { data: posts } = await q;
+  const ps = posts ?? [];
+  const ids = ps.map((p) => p.id);
+  const [cm, ut] = ids.length ? await Promise.all([
+    sb.from("comments").select("*").in("post_id", ids).order("created_at", { ascending: true }),
+    sb.from("uteis").select("post_id,user_id").in("post_id", ids),
+  ]) : [{ data: [] }, { data: [] }];
+  const users = [...new Set([...ps.map((p) => p.user_id), ...(cm.data ?? []).map((c) => c.user_id)])];
+  const { data: ms } = users.length ? await sb.from("membros").select("*").in("id", users) : { data: [] };
+  return { posts: ps, comments: cm.data ?? [], uteis: ut.data ?? [], membros: Object.fromEntries((ms ?? []).map((m) => [m.id, m])) };
+}
+
+async function renderComunidade(keepScroll) {
+  clearTimeout(pollT);
+  S.canal = S.canal || "tudo";
+  S.openComments = S.openComments || new Set();
+  const rh = S.profile?.role === "rh";
+  const y = keepScroll ? window.scrollY : 0;
+  if (!keepScroll) app.innerHTML = `${topbar("", "comunidade")}<main class="wrap"><div class="gen"><span class="spinner"></span></div></main>`, bindTop();
+  const feed = await fetchFeed(S.canal);
+  const meuCanal = S.canal !== "tudo" ? S.canal : ({ "Dados e BI": "dados", Marketing: "marketing", Produto: "produto" }[S.profile?.area] || "geral");
+  const postsHTML = feed.posts.map((p) => postHTML(p, feed, rh)).join("")
+    || `<div class="card empty">Nenhum post neste canal ainda. Que tal abrir a conversa?</div>`;
+  app.innerHTML = `${topbar(`<button class="btn btn-ghost btn-sm" id="reload">Atualizar</button>`, "comunidade")}<main class="wrap" style="padding-bottom:80px">
+    <div class="rh-head fade"><div><span class="label">Comunidade</span><h1>Ninguém sobe de nível sozinho.</h1>
+      <p class="muted" style="margin-top:8px">Tire dúvidas, peça feedback de case e comemore as conquistas do grupo.</p></div></div>
+    <div class="com fade">
+      <aside class="com-side">
+        <nav class="canais" aria-label="Canais">${CANAIS.map(([k, t]) => `<button data-canal="${k}" ${S.canal === k ? 'aria-current="true"' : ""}># ${t}</button>`).join("")}</nav>
+        ${rh ? "" : `<label class="check" style="margin-top:18px"><input type="checkbox" id="share" ${S.profile?.compartilhar_conquistas !== false ? "checked" : ""}><span>Compartilhar minhas conquistas no feed (começar trilha, concluir semana, nota 7+ no case).</span></label>`}
+        <p class="dim" style="font-size:13px;margin-top:14px">Os outros participantes veem só seu nome e sua área. Trilhas, notas e PDFs continuam privados.</p>
+      </aside>
+      <section>
+        <form class="card composer" id="cf">
+          <label for="ct" class="sr">Escreva um post</label>
+          <textarea id="ct" maxlength="2000" placeholder="Compartilhe uma dúvida, um conteúdo bom ou peça feedback do seu case..."></textarea>
+          <div class="composer-f">
+            <select id="cc" aria-label="Canal">${CANAIS.slice(1).map(([k, t]) => `<option value="${k}" ${meuCanal === k ? "selected" : ""}>${t}</option>`).join("")}</select>
+            ${rh ? `<label class="check"><input type="checkbox" id="aviso"><span>Publicar como aviso da equipe</span></label>` : ""}
+            <span class="sp"></span><button class="btn btn-blue btn-sm" type="submit">Publicar</button>
+          </div>
+        </form>
+        <div class="feed">${postsHTML}</div>
+      </section>
+    </div></main>`;
+  bindTop();
+  if (keepScroll) window.scrollTo(0, y);
+  $("#reload").onclick = () => renderComunidade(true);
+  $$("[data-canal]").forEach((b) => b.addEventListener("click", () => { S.canal = b.dataset.canal; renderComunidade(); }));
+  $("#share")?.addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    const { error } = await sb.from("profiles").update({ compartilhar_conquistas: on }).eq("id", currentUid);
+    if (error) { e.target.checked = !on; return toast("Não deu para salvar agora."); }
+    S.profile.compartilhar_conquistas = on; toast(on ? "Suas conquistas vão aparecer no feed." : "Suas conquistas não vão mais aparecer no feed.");
+  });
+  $("#cf").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const texto = $("#ct").value.trim(); if (!texto) return $("#ct").focus();
+    const btn = $("button[type=submit]", e.target); btn.disabled = true;
+    const { error } = await sb.from("posts").insert({ canal: $("#cc").value, texto, tipo: $("#aviso")?.checked ? "aviso" : "post" });
+    btn.disabled = false;
+    if (error) return toast("Não deu para publicar. Tente de novo.");
+    toast("Publicado!"); renderComunidade(true);
+  });
+  $$("[data-util]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    const mine = b.getAttribute("aria-pressed") === "true";
+    const { error } = mine
+      ? await sb.from("uteis").delete().eq("post_id", b.dataset.util).eq("user_id", currentUid)
+      : await sb.from("uteis").insert({ post_id: b.dataset.util });
+    if (error) { b.disabled = false; return toast("Não deu agora. Tente de novo."); }
+    renderComunidade(true);
+  }));
+  $$("[data-coments]").forEach((b) => b.addEventListener("click", () => {
+    const id = b.dataset.coments; S.openComments.has(id) ? S.openComments.delete(id) : S.openComments.add(id);
+    $(`#cm-${id}`).hidden = !S.openComments.has(id);
+    if (S.openComments.has(id)) $(`#cm-${id} input`)?.focus();
+  }));
+  $$("form[data-cform]").forEach((f) => f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const inp = $("input", f), texto = inp.value.trim(); if (!texto) return;
+    inp.disabled = true;
+    const { error } = await sb.from("comments").insert({ post_id: f.dataset.cform, texto });
+    if (error) { inp.disabled = false; return toast("Não deu para comentar. Tente de novo."); }
+    S.openComments.add(f.dataset.cform); renderComunidade(true);
+  }));
+  const confirmar = (b, fn) => { if (b.dataset.confirm !== "1") { b.dataset.confirm = "1"; b.textContent = "Confirmar"; return; } fn(); };
+  $$("[data-delpost]").forEach((b) => b.addEventListener("click", () => confirmar(b, async () => {
+    const { error } = await sb.from("posts").delete().eq("id", b.dataset.delpost);
+    if (error) return toast("Não deu para apagar."); toast("Post apagado."); renderComunidade(true);
+  })));
+  $$("[data-delcom]").forEach((b) => b.addEventListener("click", () => confirmar(b, async () => {
+    const { error } = await sb.from("comments").delete().eq("id", b.dataset.delcom);
+    if (error) return toast("Não deu para apagar."); renderComunidade(true);
+  })));
+  $$("[data-fixar]").forEach((b) => b.addEventListener("click", async () => {
+    const { error } = await sb.from("posts").update({ fixado: b.dataset.on !== "1" }).eq("id", b.dataset.fixar);
+    if (error) return toast("Não deu para fixar."); renderComunidade(true);
+  }));
+}
+
+function postHTML(p, feed, rh) {
+  const m = feed.membros[p.user_id] || {};
+  const nUteis = feed.uteis.filter((u) => u.post_id === p.id).length;
+  const meuUtil = feed.uteis.some((u) => u.post_id === p.id && u.user_id === currentUid);
+  const cms = feed.comments.filter((c) => c.post_id === p.id);
+  const podeApagar = p.user_id === currentUid || rh;
+  const quem = `<span class="who-l"><b>${esc(m.nome || "Participante")}</b>${m.role === "rh" ? ` <span class="pill amb" style="padding:2px 8px">Equipe</span>` : m.area ? ` <span class="dim">· ${esc(m.area)}</span>` : ""}</span>`;
+  const meta = `<span class="dim">${tempo(p.created_at)} · #${esc(nomeCanal(p.canal))}</span>`;
+  if (p.tipo === "conquista") {
+    return `<article class="post conq">
+      <span class="conq-ic">${ic("bolt")}</span>
+      <p><b>${esc(m.nome || "Participante")}</b> ${esc(p.texto)}<br>${meta}</p>
+      <div class="post-a"><button class="pa ${meuUtil ? "on" : ""}" data-util="${p.id}" aria-pressed="${meuUtil}">Parabéns${nUteis ? ` · ${nUteis}` : ""}</button>
+      ${podeApagar ? `<button class="pa danger" data-delpost="${p.id}">Apagar</button>` : ""}</div>
+    </article>`;
+  }
+  return `<article class="post ${p.tipo === "aviso" ? "aviso" : ""} ${p.fixado ? "fix" : ""}">
+    ${p.fixado || p.tipo === "aviso" ? `<span class="label" style="color:var(--amber-hi)">${p.fixado ? "Fixado" : ""}${p.fixado && p.tipo === "aviso" ? " · " : ""}${p.tipo === "aviso" ? "Aviso da equipe" : ""}</span>` : ""}
+    <div class="post-h"><span class="av">${esc(iniciais(m.nome))}</span><div>${quem}<br>${meta}</div></div>
+    <p class="post-t">${esc(p.texto)}</p>
+    <div class="post-a">
+      <button class="pa ${meuUtil ? "on" : ""}" data-util="${p.id}" aria-pressed="${meuUtil}">Útil${nUteis ? ` · ${nUteis}` : ""}</button>
+      <button class="pa" data-coments="${p.id}">${cms.length ? `${cms.length} comentário${cms.length > 1 ? "s" : ""}` : "Comentar"}</button>
+      ${rh ? `<button class="pa" data-fixar="${p.id}" data-on="${p.fixado ? 1 : 0}">${p.fixado ? "Desafixar" : "Fixar"}</button>` : ""}
+      ${podeApagar ? `<button class="pa danger" data-delpost="${p.id}">Apagar</button>` : ""}
+    </div>
+    <div class="cms" id="cm-${p.id}" ${S.openComments.has(p.id) ? "" : "hidden"}>
+      ${cms.map((c) => { const cm = feed.membros[c.user_id] || {}; return `<div class="cm"><span class="av sm">${esc(iniciais(cm.nome))}</span><p><b>${esc(cm.nome || "Participante")}</b> <span class="dim">${tempo(c.created_at)}</span><br>${esc(c.texto)}</p>${c.user_id === currentUid || rh ? `<button class="pa danger" data-delcom="${c.id}">Apagar</button>` : ""}</div>`; }).join("")}
+      <form class="cm-f" data-cform="${p.id}"><label class="sr" for="ci-${p.id}">Comentário</label><input type="text" id="ci-${p.id}" maxlength="1000" placeholder="Escreva um comentário..."><button class="btn btn-ghost btn-sm" type="submit">Enviar</button></form>
+    </div>
+  </article>`;
+}
+
 let pollN = 0;
 function schedulePoll() {
   clearTimeout(pollT);
@@ -558,7 +781,7 @@ async function uploadCase(file) {
 
 /* ---------------- RH ---------------- */
 async function loadRH() {
-  app.innerHTML = `${topbar()}<main class="wrap"><div class="gen"><span class="spinner"></span></div></main>`;
+  app.innerHTML = `${topbar("", "painel")}<main class="wrap"><div class="gen"><span class="spinner"></span></div></main>`;
   bindTop();
   const [pr, pl, su, al] = await Promise.all([
     sb.from("profiles").select("*").order("created_at", { ascending: false }),
@@ -627,7 +850,7 @@ function renderRH() {
         <p class="dim" style="font-size:13px;margin-top:14px">Remover da lista impede novos cadastros, mas não apaga quem já entrou.</p></div>
     </div>`;
   }
-  app.innerHTML = `${topbar(`<button class="btn btn-ghost btn-sm" id="reload">Atualizar</button>`)}<main class="wrap" style="padding-bottom:80px">
+  app.innerHTML = `${topbar(`<button class="btn btn-ghost btn-sm" id="reload">Atualizar</button>`, "painel")}<main class="wrap" style="padding-bottom:80px">
     <div class="rh-head fade"><div><span class="label">Visão geral</span><h1>Como o grupo está indo</h1></div></div>
     <div class="kpis fade">
       <div class="kpi"><b>${cands}</b><span>candidatos</span></div>
@@ -664,7 +887,7 @@ function renderRHDetail(planId) {
   const prof = S.rh.profiles.find((p) => p.id === plan.user_id) || {};
   const subs = S.rh.subs.filter((s) => s.plan_id === planId);
   const r = plan.respostas || {};
-  app.innerHTML = `${topbar()}<main class="wrap" style="padding-bottom:80px">
+  app.innerHTML = `${topbar("", "painel")}<main class="wrap" style="padding-bottom:80px">
     <div style="padding-top:28px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-ghost btn-sm" id="back">${ic("back")} Todos os candidatos</button>
       <span class="muted"><b style="color:var(--text)">${esc(prof.nome || "—")}</b> · ${esc(prof.email || "")} · vem de: ${esc(r.origem || "—")} · nível ${esc(r.nivel || "—")} · ${esc(r.horas || "?")}h/semana · prefere ${esc(r.formato || "—")}</span>

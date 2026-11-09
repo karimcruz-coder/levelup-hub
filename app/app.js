@@ -149,8 +149,8 @@ function renderLogin() {
       </ul>
     </div>
     <div class="auth-r"><form class="auth-box fade" id="login" novalidate>
-      <h2>Entrar</h2>
-      <p class="muted">Use o e-mail que você passou para a equipe. Enviamos um link de acesso, sem senha.</p>
+      <h2>Entrar ou criar conta</h2>
+      <p class="muted">Digite seu e-mail. Se for sua primeira vez, sua conta é criada na hora. Enviamos um link de acesso, sem senha.</p>
       <div class="field"><label for="em">E-mail</label><input type="email" id="em" autocomplete="email" placeholder="voce@email.com" required></div>
       <p class="err" id="lerr" aria-live="polite"></p>
       <button class="btn btn-primary" id="lbtn" type="submit">Receber link de acesso ${ic("arrow")}</button>
@@ -167,7 +167,7 @@ function renderLogin() {
     if (error) {
       const m = (error.message || "").toLowerCase();
       err.textContent = m.includes("database") || m.includes("autorizado")
-        ? "Esse e-mail ainda não está no grupo de teste. Fale com a equipe LevelUp."
+        ? "As inscrições estão fechadas ou chegaram ao limite de hoje. Tente amanhã ou fale com a equipe LevelUp."
         : m.includes("rate") ? "Muitos pedidos seguidos. Espere alguns minutos e tente de novo."
         : "Não conseguimos enviar agora. Tente de novo em instantes.";
       return;
@@ -783,13 +783,16 @@ async function uploadCase(file) {
 async function loadRH() {
   app.innerHTML = `${topbar("", "painel")}<main class="wrap"><div class="gen"><span class="spinner"></span></div></main>`;
   bindTop();
-  const [pr, pl, su, al] = await Promise.all([
+  const [pr, pl, su, al, cf] = await Promise.all([
     sb.from("profiles").select("*").order("created_at", { ascending: false }),
     sb.from("plans").select("*").order("created_at", { ascending: false }),
     sb.from("submissions").select("*").order("created_at", { ascending: false }),
     sb.from("allowlist").select("*").order("added_at", { ascending: false }),
+    sb.from("config").select("*"),
   ]);
-  S.rh = { profiles: pr.data ?? [], plans: pl.data ?? [], subs: su.data ?? [], allow: al.data ?? [] };
+  const cfg = Object.fromEntries((cf.data ?? []).map((c) => [c.chave, c.valor]));
+  S.rh = { profiles: pr.data ?? [], plans: pl.data ?? [], subs: su.data ?? [], allow: al.data ?? [],
+    aberto: cfg.inscricoes_abertas === true, limite: Number(cfg.limite_cadastros_dia ?? 30) };
   if (S.rhPlanId && S.rh.plans.some((p) => p.id === S.rhPlanId)) return renderRHDetail(S.rhPlanId);
   renderRH();
 }
@@ -840,7 +843,20 @@ function renderRH() {
       </tbody></table></div>` : `<div class="card empty">Nenhuma revisão pendente. O RH só é chamado quando um candidato pede.</div>`;
   }
   if (S.rhTab === "acesso") {
-    content = `<div class="allow">
+    const novos24h = profiles.filter((p) => Date.now() - new Date(p.created_at).getTime() < 864e5).length;
+    content = `<form class="card insc" id="insc">
+      <div style="display:grid;gap:6px"><span class="label">Inscrições pelo site</span>
+        <h3 style="font-size:22px">${S.rh.aberto ? "Abertas: qualquer pessoa pode se cadastrar" : "Fechadas: só entra quem está na lista"}</h3>
+        <p class="muted" style="font-size:14px">Com as inscrições abertas, quem clicar em "Sou candidato" no site cria a conta sozinho e já cai na tela de colar a vaga. Os e-mails da lista abaixo entram sempre.</p></div>
+      <div class="insc-ctrl">
+        <label class="switch"><input type="checkbox" id="ins-ab" ${S.rh.aberto ? "checked" : ""}><span></span>Inscrições abertas</label>
+        <label for="ins-lim" class="lbl" style="display:flex;gap:10px;align-items:center">Limite de novas contas por dia
+          <input type="number" id="ins-lim" min="1" max="500" value="${S.rh.limite}" style="width:90px;padding:9px 12px"></label>
+        <span class="dim" style="font-size:13.5px">${novos24h} nas últimas 24h</span>
+        <button class="btn btn-blue btn-sm" type="submit">Salvar</button>
+      </div>
+    </form>
+    <div class="allow" style="margin-top:16px">
       <form class="card" id="af"><span class="label">Liberar acesso</span><h3 style="margin:10px 0 8px">Adicionar e-mails ao grupo</h3>
         <p class="muted" style="font-size:14px;margin-bottom:14px">Um por linha ou separados por vírgula. Depois é só mandar o link do app para a pessoa.</p>
         <div class="field"><label for="ae" class="sr">E-mails</label><textarea id="ae" style="min-height:140px" placeholder="ana@gmail.com&#10;lucas@hotmail.com"></textarea></div>
@@ -864,6 +880,16 @@ function renderRH() {
   $("#reload").onclick = () => loadRH();
   $$("[data-rtab]").forEach((b) => b.addEventListener("click", () => { S.rhTab = b.dataset.rtab; renderRH(); }));
   $$("tr[data-plan]").forEach((tr) => tr.addEventListener("click", () => { S.tab = tr.dataset.case ? "case" : "trilha"; S.openWeeks = new Set(); renderRHDetail(tr.dataset.plan); }));
+  $("#insc")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const aberto = $("#ins-ab").checked, limite = Math.max(1, Math.min(500, parseInt($("#ins-lim").value, 10) || 30));
+    const { error } = await sb.from("config").upsert([
+      { chave: "inscricoes_abertas", valor: aberto }, { chave: "limite_cadastros_dia", valor: limite },
+    ], { onConflict: "chave" });
+    if (error) return toast("Não deu para salvar. Tente de novo.");
+    toast(aberto ? `Inscrições abertas, até ${limite} novas contas por dia.` : "Inscrições fechadas. Só entra quem está na lista.");
+    loadRH();
+  });
   $("#af")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const emails = [...new Set($("#ae").value.split(/[\s,;]+/).map((x) => x.trim().toLowerCase()).filter((x) => /^\S+@\S+\.\S+$/.test(x)))];
